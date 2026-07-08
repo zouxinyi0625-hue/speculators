@@ -37,15 +37,23 @@ from tqdm import tqdm
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--raw-dir", required=True, help="Directory with raw <layer>.jsonl files")
-    p.add_argument("--layers", required=True, help="Comma-separated layer names")
+    # Input: EITHER raw-dir + layers, OR a pre-split jsonl file (from DSpark's
+    # prepare_maiprofile_splits.py). Use --input-file when you want to preserve
+    # the DSpark train/eval split and only regenerate the train portion.
+    input_group = p.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--raw-dir", help="Directory with raw <layer>.jsonl files (regenerates everything)")
+    input_group.add_argument("--input-file", help="Pre-split train JSONL (from prepare_maiprofile_splits.py); preserves DSpark train/eval split")
+    p.add_argument("--layers", default=None, help="Comma-separated layer names (required with --raw-dir, ignored with --input-file)")
     p.add_argument("--outfile", required=True, help="Output JSONL path")
     p.add_argument("--endpoint", default="http://127.0.0.1:8000/v1/chat/completions")
     p.add_argument("--model", default=None, help="Model name (auto-detected if omitted)")
     p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--resume", action="store_true", help="Skip IDs already in outfile")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.raw_dir and not args.layers:
+        p.error("--layers is required when using --raw-dir")
+    return args
 
 
 def load_records(raw_dir: str, layers: list[str]):
@@ -89,6 +97,47 @@ def load_records(raw_dir: str, layers: list[str]):
                         if isinstance(m, dict) and m.get("role") in ("system", "user")
                     ],
                 }, layer
+
+
+def load_records_from_split(input_file: str):
+    """Yield (record_dict, layer) from a pre-split train JSONL.
+
+    The split file (produced by prepare_maiprofile_splits.py) already has
+    `conversations` in role/content format. We strip any existing assistant
+    turns (they were from the 12B target) and regenerate with our 26B-A4B.
+    """
+    filepath = Path(input_file)
+    if not filepath.exists():
+        print(f"[FATAL] input file not found: {filepath}", file=sys.stderr)
+        sys.exit(1)
+    with filepath.open("r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[WARN] line {line_num}: invalid JSON, skipping", file=sys.stderr)
+                continue
+            conversations = record.get("conversations") or record.get("prompt_messages") or []
+            if not isinstance(conversations, list) or not conversations:
+                continue
+            # Keep only system + user (drop assistant from prior regen)
+            messages = [
+                {"role": m["role"], "content": m.get("content") or ""}
+                for m in conversations
+                if isinstance(m, dict) and m.get("role") in ("system", "user")
+            ]
+            if not any(m["role"] == "user" for m in messages):
+                continue
+            layer = record.get("source_layer") or "unknown"
+            yield {
+                "id": record.get("id") or f"{layer}:{record.get('prompt_hash') or line_num}",
+                "source_layer": layer,
+                "user_id": record.get("user_id"),
+                "prompt_hash": record.get("prompt_hash"),
+                "messages": messages,
+            }, layer
 
 
 def load_seen(path: str) -> set[str]:
@@ -195,13 +244,19 @@ async def main():
     if args.model is None:
         args.model = await detect_model(args.endpoint)
     print(f"Model: {args.model}")
-    print(f"Layers: {layers}")
-    print(f"Output: {args.outfile}")
-    print()
 
-    # Load all records
-    records = list(load_records(args.raw_dir, layers))
-    print(f"Total records across {len(layers)} layers: {len(records)}")
+    # Load records from either raw layers or pre-split file
+    if args.input_file:
+        print(f"Input: {args.input_file} (pre-split, preserving DSpark train/eval split)")
+        records = list(load_records_from_split(args.input_file))
+    else:
+        layers = [l.strip() for l in args.layers.split(",") if l.strip()]
+        print(f"Layers: {layers}")
+        records = list(load_records(args.raw_dir, layers))
+
+    print(f"Output: {args.outfile}")
+    print(f"Total records: {len(records)}")
+    print()
 
     # Resume support
     seen = load_seen(args.outfile) if args.resume else set()

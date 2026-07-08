@@ -47,7 +47,8 @@ MODEL="${MODEL:-google/gemma-4-26B-A4B-it}"
 # Long layers are NOT excluded — EAGLE-3 handles them fine at seq-length=8192.
 MSNDNI="${AZURE_ML_INPUT_msndni:?AZURE_ML_INPUT_msndni is not set (Azure ML mount)}"
 DATE="${DATE:-20260615}"
-DATASET="${DATASET:-${MSNDNI}/shares/users/zxy/maiprofile/regenerated/${DATE}/maiprofile_all_layers_regen_26b.jsonl}"
+EAGLE3_DIR="${EAGLE3_DIR:-${MSNDNI}/shares/users/zxy/maiprofile/eagle3/${DATE}}"
+DATASET="${DATASET:-${EAGLE3_DIR}/regen_26b/train_all_layers_regen_26b.jsonl}"
 
 # Where preprocessed data lands (arrow shards + token_freq.pt).
 OUTPUT_DIR="${OUTPUT_DIR:-./output/maiprofile_eagle3_26b}"

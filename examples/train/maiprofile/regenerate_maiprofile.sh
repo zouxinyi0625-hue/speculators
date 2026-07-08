@@ -18,8 +18,14 @@
 # Usage:
 #   bash examples/train/maiprofile/regenerate_maiprofile.sh
 #
-# To regenerate only some layers:
+# To regenerate only some layers (raw mode):
 #   LAYERS="layer1_actual,layer3_seasonality" bash .../regenerate_maiprofile.sh
+#
+# To preserve DSpark's train/eval split (recommended for comparability):
+#   INPUT_FILE=$AZURE_ML_INPUT_msndni/.../train_maiprofile_all_layers.jsonl \
+#     bash examples/train/maiprofile/regenerate_maiprofile.sh
+#   This reads the pre-split train jsonl, strips old (12B) assistant turns,
+#   and regenerates them with the 26B-A4B target. Eval stays untouched.
 
 set -euo pipefail
 
@@ -32,14 +38,19 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 DP_SIZE="${DP_SIZE:-4}"
 TP_SIZE="${TP_SIZE:-2}"
 
-# Data paths
+# Data paths — all under the eagle3/ tree on mount
 MSNDNI="${AZURE_ML_INPUT_msndni:?AZURE_ML_INPUT_msndni is not set (Azure ML mount)}"
 DATE="${DATE:-20260615}"
 RAW_DIR="${RAW_DIR:-${MSNDNI}/shares/users/zxy/maiprofile/raw_data/${DATE}}"
-OUTPUT_DIR="${OUTPUT_DIR:-${MSNDNI}/shares/users/zxy/maiprofile/regenerated/${DATE}}"
-OUTFILE="${OUTFILE:-${OUTPUT_DIR}/maiprofile_all_layers_regen_26b.jsonl}"
+EAGLE3_DIR="${EAGLE3_DIR:-${MSNDNI}/shares/users/zxy/maiprofile/eagle3/${DATE}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${EAGLE3_DIR}/regen_26b}"
+OUTFILE="${OUTFILE:-${OUTPUT_DIR}/train_all_layers_regen_26b.jsonl}"
 
-# ALL layers by default (override LAYERS to limit)
+# Input: either INPUT_FILE (pre-split train jsonl, recommended) or raw layers.
+# Default = the split produced by split_maiprofile_eagle3.py in the eagle3 dir.
+INPUT_FILE="${INPUT_FILE:-${EAGLE3_DIR}/train_all_layers.jsonl}"
+
+# ALL layers by default (only used when INPUT_FILE is empty/missing)
 LAYERS="${LAYERS:-layer1_actual,layer1_delta,layer1_intent,layer2_coarse_interest,layer2_temporal,layer3_commercial_interests,layer3_persona,layer3_seasonality,layer4_biography,layer4_commercial_preference}"
 
 # Generation parameters
@@ -95,18 +106,35 @@ echo "  Server ready."
 echo ""
 
 # --- Sub-step B: Run regeneration ---
-echo "--- Running regeneration (${LAYERS}) ---"
+echo "--- Running regeneration ---"
 mkdir -p "$(dirname "${OUTFILE}")"
 
-python "${SCRIPT_DIR}/regenerate_maiprofile.py" \
-    --raw-dir "${RAW_DIR}" \
-    --layers "${LAYERS}" \
-    --outfile "${OUTFILE}" \
-    --endpoint "http://127.0.0.1:${PORT}/v1/chat/completions" \
-    --model "${MODEL}" \
-    --max-tokens "${MAX_TOKENS}" \
-    --concurrency "${CONCURRENCY}" \
-    --resume
+REGEN_ARGS=(python "${SCRIPT_DIR}/regenerate_maiprofile.py"
+    --outfile "${OUTFILE}"
+    --endpoint "http://127.0.0.1:${PORT}/v1/chat/completions"
+    --model "${MODEL}"
+    --max-tokens "${MAX_TOKENS}"
+    --concurrency "${CONCURRENCY}"
+    --resume)
+
+if [[ -n "${INPUT_FILE:-}" && -f "${INPUT_FILE}" ]]; then
+    echo "  mode: --input-file (preserving DSpark-style split)"
+    echo "  file: ${INPUT_FILE}"
+    REGEN_ARGS+=(--input-file "${INPUT_FILE}")
+else
+    if [[ -n "${INPUT_FILE:-}" && ! -f "${INPUT_FILE}" ]]; then
+        echo "  [INFO] INPUT_FILE not found: ${INPUT_FILE}"
+        echo "         Falling back to --raw-dir mode. Run split_maiprofile_eagle3.py first"
+        echo "         if you want to preserve a train/eval split."
+    fi
+    echo "  mode: --raw-dir + --layers"
+    echo "  dir : ${RAW_DIR}"
+    echo "  layers: ${LAYERS}"
+    REGEN_ARGS+=(--raw-dir "${RAW_DIR}" --layers "${LAYERS}")
+fi
+
+echo "+ ${REGEN_ARGS[*]}"
+"${REGEN_ARGS[@]}"
 
 echo ""
 echo "==========================================="
