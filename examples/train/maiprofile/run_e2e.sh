@@ -29,8 +29,11 @@ OUTPUT_DIR="${OUTPUT_DIR:-./output/maiprofile_eagle3_26b}"
 SAVE_PATH="${SAVE_PATH:-${OUTPUT_DIR}/checkpoints}"
 
 # GPU split: vLLM (hidden state extraction) vs training
+# 26B-A4B needs tp=2 (doesn't fit on 1x A100 80G). With 4 GPUs for vLLM:
+# dp=2, tp=2 = 2 replicas × 2 GPUs each.
 VLLM_GPUS="${VLLM_GPUS:-0,1,2,3}"
-VLLM_DP_SIZE="${VLLM_DP_SIZE:-4}"
+VLLM_DP_SIZE="${VLLM_DP_SIZE:-2}"
+VLLM_TP_SIZE="${VLLM_TP_SIZE:-2}"
 TRAIN_GPUS="${TRAIN_GPUS:-4,5,6,7}"
 NUM_TRAIN_GPUS="${NUM_TRAIN_GPUS:-4}"
 
@@ -112,6 +115,7 @@ echo "===== Step 2/3: Launch vLLM (hidden state extraction) ====="
 VLLM_CMD=(python scripts/launch_vllm.py "${MODEL}"
     --hidden-states-path "${HIDDEN_STATES_PATH}"
     -- --data-parallel-size "${VLLM_DP_SIZE}"
+    --tensor-parallel-size "${VLLM_TP_SIZE}"
     --port "${VLLM_PORT}"
     --gpu-memory-utilization "${GPU_MEM_UTIL}"
     --no-enable-chunked-prefill)
