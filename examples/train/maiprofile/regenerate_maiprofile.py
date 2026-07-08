@@ -49,6 +49,7 @@ def parse_args():
     p.add_argument("--model", default=None, help="Model name (auto-detected if omitted)")
     p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--concurrency", type=int, default=32)
+    p.add_argument("--limit", type=int, default=None, help="Stop after N samples (for pilot runs)")
     p.add_argument("--resume", action="store_true", help="Skip IDs already in outfile")
     args = p.parse_args()
     if args.raw_dir and not args.layers:
@@ -264,6 +265,11 @@ async def main():
         before = len(records)
         records = [(r, l) for r, l in records if r["id"] not in seen]
         print(f"Resuming: skipped {before - len(records)} already-done, {len(records)} remaining")
+
+    # Limit (for pilot runs)
+    if args.limit and len(records) > args.limit:
+        records = records[: args.limit]
+        print(f"Limiting to {args.limit} samples (pilot mode)")
 
     if not records:
         print("Nothing to do.")

@@ -56,6 +56,7 @@ LAYERS="${LAYERS:-layer1_actual,layer1_delta,layer1_intent,layer2_coarse_interes
 # Generation parameters
 MAX_TOKENS="${MAX_TOKENS:-4096}"
 CONCURRENCY="${CONCURRENCY:-32}"
+LIMIT="${LIMIT:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
 # ==========================================================
 
@@ -116,6 +117,10 @@ REGEN_ARGS=(python "${SCRIPT_DIR}/regenerate_maiprofile.py"
     --max-tokens "${MAX_TOKENS}"
     --concurrency "${CONCURRENCY}"
     --resume)
+
+if [[ -n "${LIMIT}" ]]; then
+    REGEN_ARGS+=(--limit "${LIMIT}")
+fi
 
 if [[ -n "${INPUT_FILE:-}" && -f "${INPUT_FILE}" ]]; then
     echo "  mode: --input-file (preserving DSpark-style split)"
