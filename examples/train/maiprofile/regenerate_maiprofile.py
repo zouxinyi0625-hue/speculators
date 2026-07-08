@@ -240,7 +240,6 @@ async def worker(
 
 async def main():
     args = parse_args()
-    layers = [l.strip() for l in args.layers.split(",") if l.strip()]
 
     if args.model is None:
         args.model = await detect_model(args.endpoint)
