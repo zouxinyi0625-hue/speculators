@@ -13,20 +13,42 @@ current MTP baseline (online **2113 tok/s** / offline **2023** / accept_len
 
 ---
 
-## Why this reuses the DSpark data
+## Why this reuses the DSpark *regenerated* data (not the raw prompts)
 
-The DSpark line already produced a MAI Profile **short-layer prompt split** in
-the exact `conversations` jsonl schema that speculators' `prepare_data.py`
-accepts for custom data:
+EAGLE-3's training loss mask is built **only over assistant-response spans**
+(`preprocessing.py:_create_loss_mask_from_offsets`). A prompt-only sample
+(system+user, no assistant) produces an all-zero loss mask, triggers a
+"No assistant response spans found" warning, and is dropped by
+`--minimum-valid-tokens`. **So the MAI Profile `raw_data/` (prompt-only) cannot
+be fed to `prepare_data.py` directly** — it first needs target-generated
+assistant responses.
+
+The DSpark line already did that regeneration: it sent every short-layer prompt
+through the target and appended an assistant turn, producing (36,103 rows, 0
+errors):
 
 ```
-$AZURE_ML_INPUT_msndni/shares/users/zxy/maiprofile/prepared_prompts/20260615/short_layers/train_maiprofile_short_layers.jsonl
+$AZURE_ML_INPUT_msndni/shares/users/zxy/maiprofile/regenerated/20260615/maiprofile_short_layers_regen.jsonl
 ```
 
-EAGLE-3 **online** training only needs the *prompts*: the assistant responses
-and target hidden states are generated on-the-fly by the live vLLM verifier.
-So — unlike DSpark — we do **not** need the `regenerated/` or `target_cache/`
-artifacts. One less thing to build.
+This file is already `conversations` jsonl **with** the assistant turn — exactly
+what `prepare_data.py` wants. We reuse it as-is; no separate regenerate step.
+
+> **What online generation does vs doesn't do:** In Step 3, the live vLLM
+> verifier generates **hidden states** on-demand (`method=extract_hidden_states`),
+> NOT the assistant text. The assistant tokens must already exist in the data
+> (that's what defines the loss mask). Online ≠ "no responses needed".
+
+### ⚠️ Valid-sample loss on long prompts (important)
+
+MAI Profile prompts are long; the regenerated assistant responses are relatively
+short (DSpark regen used `max_tokens=2048`). If `SEQ_LENGTH` is small, the
+assistant suffix gets truncated away and too few supervised tokens remain, so
+many samples are silently dropped. DeepSpec's own analysis at `max_length=1024`
+showed a **low valid ratio** for exactly this reason; `layer3_seasonality` (short
+prompt) survived best. **Mitigation: keep `SEQ_LENGTH >= 8192`** so the assistant
+span stays inside the window. This also happens to argue *for* using longer
+sequence lengths, consistent with EAGLE-3 tolerating long context.
 
 ---
 
