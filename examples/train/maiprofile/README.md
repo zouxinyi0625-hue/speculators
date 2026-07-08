@@ -85,9 +85,25 @@ whether to pin `--target-layer-ids` explicitly.
 
 ---
 
-## The three steps
+## The four steps
 
 All commands run **on the server**, from the repo root.
+
+### Step 0 — Regenerate responses with 26B-A4B target (vLLM venv)
+
+```bash
+bash examples/train/maiprofile/regenerate_maiprofile.sh
+```
+
+Starts vLLM with the 26B-A4B target, sends ALL 11 layers' prompts through
+chat completions, and writes `maiprofile_all_layers_regen_26b.jsonl` with the
+assistant turn appended. Uses all 8 GPUs (no training during regen). Supports
+`--resume` for restartability.
+
+**Why re-regenerate** (not reuse DSpark's regen): DSpark regenerated against
+the **12B** target. Our EAGLE-3 draft must match the **26B-A4B** target's
+response distribution to get high acceptance — using a different model's
+responses would train the draft on the wrong distribution.
 
 ### Step 1 — Prepare data (speculators venv)
 
@@ -179,7 +195,9 @@ roadmap success criteria), not just aggregate tok/s.
 | File | Role |
 |---|---|
 | `probe_gemma4_26b.py` | Server-side config probe (run first; fills in TBDs) |
-| `prepare_maiprofile_eagle3.sh` | Step 1 — wraps `prepare_data.py` on the maiprofile split |
+| `regenerate_maiprofile.sh` | Step 0 — start vLLM + regenerate all layers with 26B-A4B |
+| `regenerate_maiprofile.py` | Async chat-completion worker (called by the .sh above) |
+| `prepare_maiprofile_eagle3.sh` | Step 1 — wraps `prepare_data.py` on the regenerated data |
 | `launch_vllm_gemma4_26b.sh` | Step 2 — wraps `launch_vllm.py` (verifier + hidden states) |
 | `train_eagle3_maiprofile.sh` | Step 3 — wraps `train.py` (online, torchrun, 4 GPUs) |
 

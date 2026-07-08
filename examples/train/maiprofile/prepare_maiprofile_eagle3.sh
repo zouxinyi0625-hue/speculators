@@ -37,12 +37,17 @@ set -euo pipefail
 # Target/verifier model. Full 26B-A4B (MoE) instruct model.
 MODEL="${MODEL:-google/gemma-4-26B-A4B-it}"
 
-# MAI Profile short-layer data. MUST include target-generated assistant
-# responses -> use the DSpark REGENERATED file (not the raw prompt split).
+# MAI Profile data. MUST include target-generated assistant responses.
+# Use the DSpark REGENERATED file (not the raw prompt split).
 # This file is already `conversations` jsonl with an assistant turn appended.
+#
+# DEFAULT: short-layer regen (36k rows). To use ALL layers (recommended —
+# EAGLE-3 benefits from more data), set DATASET to point at a full-layer
+# regenerated file, or concatenate multiple regen files into one jsonl.
+# Long layers are NOT excluded — EAGLE-3 handles them fine at seq-length=8192.
 MSNDNI="${AZURE_ML_INPUT_msndni:?AZURE_ML_INPUT_msndni is not set (Azure ML mount)}"
 DATE="${DATE:-20260615}"
-DATASET="${DATASET:-${MSNDNI}/shares/users/zxy/maiprofile/regenerated/${DATE}/maiprofile_short_layers_regen.jsonl}"
+DATASET="${DATASET:-${MSNDNI}/shares/users/zxy/maiprofile/regenerated/${DATE}/maiprofile_all_layers_regen_26b.jsonl}"
 
 # Where preprocessed data lands (arrow shards + token_freq.pt).
 OUTPUT_DIR="${OUTPUT_DIR:-./output/maiprofile_eagle3_26b}"
