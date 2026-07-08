@@ -29,13 +29,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-./output/maiprofile_eagle3_26b}"
 SAVE_PATH="${SAVE_PATH:-${OUTPUT_DIR}/checkpoints}"
 
 # GPU split: vLLM (hidden state extraction) vs training
-# 26B-A4B needs tp=2 (doesn't fit on 1x A100 80G). With 4 GPUs for vLLM:
-# dp=2, tp=2 = 2 replicas × 2 GPUs each.
-VLLM_GPUS="${VLLM_GPUS:-0,1,2,3}"
-VLLM_DP_SIZE="${VLLM_DP_SIZE:-2}"
+# 26B-A4B needs tp=2 (doesn't fit on 1x A100 80G).
+# dp + hidden-states extraction has a routing bug (hidden states return 0 length)
+# so we use tp=2 only, no dp. vLLM gets 2 GPUs, training gets the other 6.
+VLLM_GPUS="${VLLM_GPUS:-0,1}"
 VLLM_TP_SIZE="${VLLM_TP_SIZE:-2}"
-TRAIN_GPUS="${TRAIN_GPUS:-4,5,6,7}"
-NUM_TRAIN_GPUS="${NUM_TRAIN_GPUS:-4}"
+TRAIN_GPUS="${TRAIN_GPUS:-2,3,4,5,6,7}"
+NUM_TRAIN_GPUS="${NUM_TRAIN_GPUS:-6}"
 
 # Training hyperparams (speculators defaults, override via env)
 DRAFT_VOCAB_SIZE="${DRAFT_VOCAB_SIZE:-32000}"
@@ -95,9 +95,62 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ===== Step 0: Regenerate (with resume — skips already-done rows) =====
+echo ""
+echo "===== Step 0/4: Regenerate assistant responses (26B-A4B) ====="
+echo "  (--resume skips rows already in ${REGEN_FILE})"
+EAGLE3_DIR="$(dirname "$(dirname "${REGEN_FILE}")")"
+SPLIT_FILE="${EAGLE3_DIR}/train_all_layers.jsonl"
+if [[ ! -f "${SPLIT_FILE}" ]]; then
+    echo "[FATAL] Split file not found: ${SPLIT_FILE}"
+    echo "        Run split_maiprofile_eagle3.py first."
+    exit 1
+fi
+mkdir -p "$(dirname "${REGEN_FILE}")"
+# Start a temporary vLLM for regen (all 8 GPUs, tp=2, no dp)
+echo "  Starting vLLM for regen (tp=2, all GPUs)..."
+REGEN_VLLM_CMD=(python -m vllm.entrypoints.cli.main serve "${MODEL}"
+    --host 127.0.0.1 --port 8001 --api-key ""
+    --tensor-parallel-size 2
+    --gpu-memory-utilization 0.92 --max-model-len 16384
+    --no-enable-chunked-prefill)
+CUDA_VISIBLE_DEVICES=0,1 "${REGEN_VLLM_CMD[@]}" > "${LOG_DIR}/regen_vllm.log" 2>&1 &
+REGEN_VLLM_PID=$!
+echo "  Regen vLLM PID: ${REGEN_VLLM_PID}"
+# Wait for regen server
+ELAPSED=0
+while true; do
+    if ! kill -0 "${REGEN_VLLM_PID}" 2>/dev/null; then
+        echo "  [FATAL] Regen vLLM died. Last 20 lines:"; tail -20 "${LOG_DIR}/regen_vllm.log"; exit 1
+    fi
+    if curl -sf --connect-timeout 5 --max-time 10 "http://127.0.0.1:8001/health" >/dev/null 2>&1; then
+        echo "  Regen vLLM ready (${ELAPSED}s)."; break
+    fi
+    ELAPSED=$((ELAPSED + 2))
+    [[ ${ELAPSED} -ge ${VLLM_READY_TIMEOUT} ]] && { echo "  [FATAL] timeout"; tail -20 "${LOG_DIR}/regen_vllm.log"; exit 1; }
+    [[ $((ELAPSED % 30)) -eq 0 ]] && echo "  Still loading... (${ELAPSED}s)"
+    sleep 2
+done
+# Run regen (resume = skip already-done)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "${SCRIPT_DIR}/regenerate_maiprofile.py" \
+    --input-file "${SPLIT_FILE}" \
+    --outfile "${REGEN_FILE}" \
+    --endpoint "http://127.0.0.1:8001/v1/chat/completions" \
+    --model "${MODEL}" \
+    --max-tokens 4096 \
+    --concurrency 32 \
+    --resume 2>&1 | tee "${LOG_DIR}/regen.log"
+# Kill regen vLLM
+echo "  Stopping regen vLLM..."
+kill "${REGEN_VLLM_PID}" 2>/dev/null || true; sleep 2
+kill -0 "${REGEN_VLLM_PID}" 2>/dev/null && kill -9 "${REGEN_VLLM_PID}" 2>/dev/null || true
+echo "  Regen done."
+echo ""
+
 # ===== Step 1: Prepare data =====
 echo ""
-echo "===== Step 1/3: Prepare data ====="
+echo "===== Step 1/4: Prepare data ====="
 PREP_CMD=(python scripts/prepare_data.py
     --model "${MODEL}"
     --data "${REGEN_FILE}"
@@ -111,13 +164,13 @@ echo "  Done. Dataset at: ${OUTPUT_DIR}"
 echo ""
 
 # ===== Step 2: Launch vLLM (background) =====
-echo "===== Step 2/3: Launch vLLM (hidden state extraction) ====="
+echo "===== Step 2/4: Launch vLLM (hidden state extraction) ====="
 VLLM_CMD=(python scripts/launch_vllm.py "${MODEL}"
     --hidden-states-path "${HIDDEN_STATES_PATH}"
-    -- --data-parallel-size "${VLLM_DP_SIZE}"
-    --tensor-parallel-size "${VLLM_TP_SIZE}"
+    -- --tensor-parallel-size "${VLLM_TP_SIZE}"
     --port "${VLLM_PORT}"
     --gpu-memory-utilization "${GPU_MEM_UTIL}"
+    --max-model-len 16384
     --no-enable-chunked-prefill)
 echo "+ CUDA_VISIBLE_DEVICES=${VLLM_GPUS} ${VLLM_CMD[*]}"
 CUDA_VISIBLE_DEVICES="${VLLM_GPUS}" "${VLLM_CMD[@]}" > "${LOG_DIR}/vllm_server.log" 2>&1 &
@@ -151,7 +204,7 @@ done
 echo ""
 
 # ===== Step 3: Train =====
-echo "===== Step 3/3: Train EAGLE-3 draft ====="
+echo "===== Step 3/4: Train EAGLE-3 draft ====="
 TRAIN_ARGS=(scripts/train.py
     --verifier-name-or-path "${MODEL}"
     --data-path "${OUTPUT_DIR}"
