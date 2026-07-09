@@ -11,10 +11,10 @@ set -euo pipefail
 EAGLE3="${EAGLE3:?Set EAGLE3=\$AZURE_ML_INPUT_msndni/shares/users/zxy/maiprofile/eagle3/20260615}"
 MODEL="${MODEL:-google/gemma-4-26B-A4B-it}"
 PREPARED="$EAGLE3/prepared"
-OUTPUT="$EAGLE3/hidden_states"
+OUTPUT="$EAGLE3/hidden_states_offline"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="$SCRIPT_DIR/gen_hidden_states_transformers.py"
+SCRIPT="$SCRIPT_DIR/gen_hidden_states_vllm_offline.py"
 
 mkdir -p "$OUTPUT"
 
@@ -40,6 +40,9 @@ for rank in 0 1 2 3; do
         --model "$MODEL" \
         --prepared-data "$PREPARED" \
         --output "$OUTPUT" \
+        --tp-size 2 \
+        --batch-size 16 \
+        --max-model-len 8192 \
         --world-size 4 \
         --rank "$rank" \
         > "$LOG" 2>&1 &
