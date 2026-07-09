@@ -46,6 +46,8 @@ def parse_args():
                    help="Layer IDs to extract. Default: [2, N//2, N-3, N]")
     p.add_argument("--batch-size", type=int, default=1, help="Samples per forward pass")
     p.add_argument("--max-samples", type=int, default=None, help="Limit samples (for testing)")
+    p.add_argument("--world-size", type=int, default=1, help="Total number of parallel workers")
+    p.add_argument("--rank", type=int, default=0, help="This worker's rank (0-indexed)")
     p.add_argument("--dtype", default="bfloat16", choices=["float16", "bfloat16"],
                    help="Model dtype")
     p.add_argument("--device-map", default="auto", help="Device map for model loading")
@@ -85,7 +87,19 @@ def main():
     total = len(dataset)
     if args.max_samples:
         total = min(total, args.max_samples)
-    print(f"  Total samples: {total}")
+
+    # Compute this worker's index range
+    all_indices = list(range(total))
+    if args.world_size > 1:
+        # Each rank gets a contiguous chunk
+        chunk_size = (total + args.world_size - 1) // args.world_size
+        start = args.rank * chunk_size
+        end = min(start + chunk_size, total)
+        my_indices = all_indices[start:end]
+        print(f"  Worker {args.rank}/{args.world_size}: indices [{start}, {end}) = {len(my_indices)} samples")
+    else:
+        my_indices = all_indices
+    print(f"  Total dataset: {total}, this worker: {len(my_indices)}")
 
     # Check existing files (resume)
     output_path = Path(args.output)
@@ -115,9 +129,10 @@ def main():
     print()
 
     # Generate hidden states
-    print(f"Generating hidden states for {total} samples...")
+    print(f"Generating hidden states for {len(my_indices)} samples...")
     errors = 0
-    for idx in tqdm(range(total), desc="Generating hidden states"):
+    generated = 0
+    for idx in tqdm(my_indices, desc=f"Worker {args.rank}"):
         if idx in existing:
             continue
 
@@ -164,6 +179,7 @@ def main():
                 "hidden_states": hidden_states,
                 "token_ids": input_ids.to(torch.long),
             }, str(out_file))
+            generated += 1
 
         except torch.cuda.OutOfMemoryError:
             print(f"  [WARN] OOM on sample {idx} (seq_len={seq_len}), skipping")
@@ -176,10 +192,9 @@ def main():
             errors += 1
             continue
 
-    generated = total - len(existing) - errors
-    print(f"\nDone:")
+    print(f"\nDone (worker {args.rank}):")
     print(f"  Generated: {generated}")
-    print(f"  Skipped (existing): {len(existing)}")
+    print(f"  Skipped (existing): {len(existing & set(my_indices))}")
     print(f"  Errors: {errors}")
     print(f"  Output: {output_path}")
 
