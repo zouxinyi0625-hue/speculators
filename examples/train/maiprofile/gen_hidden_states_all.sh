@@ -18,11 +18,8 @@ SCRIPT="$SCRIPT_DIR/gen_hidden_states_transformers.py"
 
 mkdir -p "$OUTPUT"
 
-# Clean previous bad files from vLLM attempts
-if ls "$OUTPUT"/hs_*.safetensors 1>/dev/null 2>&1; then
-    echo "Cleaning previous hidden states files..."
-    rm -f "$OUTPUT"/hs_*.safetensors
-fi
+# Resume: don't clean existing files. The python script skips existing hs_*.safetensors.
+# To force a full re-run, manually: rm -f "$OUTPUT"/hs_*.safetensors
 
 echo "============================================="
 echo " Hidden States Generation (4 × tp=2 workers)"
