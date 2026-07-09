@@ -122,6 +122,7 @@ def main():
         torch_dtype=dtype,
         device_map=args.device_map,
         trust_remote_code=True,
+        attn_implementation="sdpa",
     )
     model.eval()
     print("  Model loaded.")
