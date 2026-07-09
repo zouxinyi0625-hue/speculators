@@ -122,7 +122,6 @@ def main():
         torch_dtype=dtype,
         device_map=args.device_map,
         trust_remote_code=True,
-        attn_implementation="flash_attention_2",
     )
     model.eval()
     print("  Model loaded.")
