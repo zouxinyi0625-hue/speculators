@@ -117,6 +117,10 @@ def main():
 
     # Load model
     print(f"Loading model {args.model} ({args.dtype}, device_map={args.device_map})...")
+    # Disable flash SDP (fails on Gemma-4 head_dim > 256) but keep mem_efficient SDP
+    # (cutlass-based, supports large head_dim and is fast).
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=dtype,
