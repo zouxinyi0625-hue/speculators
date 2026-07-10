@@ -121,6 +121,7 @@ def main():
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
         enable_chunked_prefill=False,
+        enable_prefix_caching=False,
         speculative_config={
             "method": "extract_hidden_states",
             "num_speculative_tokens": 1,
